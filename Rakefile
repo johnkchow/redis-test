@@ -27,52 +27,57 @@ task :teardown do
   end
 end
 
-task :test do
+task :test, :port do |t, args|
   success = 0
   error = 0
+  port = (args[:port] ||  "6379").to_s
+  puts port
 
   redis = Redis.new
-  redis.del("users_online")
-  online = []
-  100.times do
-    index = rand(USERS)
-    10.times do |offset|
-      online << index + offset
-      redis.sadd("users_online", (index + offset))
+  if true #port == "6379"
+    redis.del("users_online") 
+    100.times do
+      index = rand(USERS)
+      10.times do |offset|
+        redis.sadd("users_online", (index + offset))
+      end
     end
-  end
-
-  100000.times do |i|
-    id = USERS + i
-    redis.sadd("users_online", id)
+    100000.times do |i|
+      id = USERS + i
+      redis.sadd("users_online", id)
+    end
   end
   logger = Logger.new("shit.log")
 
+  online = nil
   EM.run do
-    puts "Starting"
-    redis = EM::Hiredis.connect
+    puts "Starting #{port}"
+    redis = EM::Hiredis.connect("redis://127.0.0.1:#{port}/0")
+    master = EM::Hiredis.connect
     # we imagine users are coming online/offline sporadically
     EM::PeriodicTimer.new(1.0/1000) do
-      defer = redis.spop("users_online")
+      defer = master.spop("users_online")
       defer.callback { success += 1 }
       defer.errback { error += 1 }
     end
     EM::PeriodicTimer.new(1.0/1000) do
       user_id = rand(USERS)
-      10.times do |offset|
+      7.times do |offset|
         defer = redis.sadd("users_online", user_id + offset)
         defer.callback {|a| success += 1 }
         defer.errback { |a| error += 1 }
 
         defer = redis.sinter("users_online", "user:#{user_id}")
-        defer.callback {|a| ; success += 1 }
+        #defer.callback {|a| logger.info a; success += 1 }
+        defer.callback {|a| success += 1 }
         defer.errback { |a| error += 1 }
       end
     end
 
     EM::PeriodicTimer.new(1) do
       redis.smembers("users_online").callback do |result|
-        puts "Online: #{result.count}"
+        online = result.count
+        puts "Online: #{online}"
       end
     end
 
@@ -80,7 +85,7 @@ task :test do
       puts "Success: #{success}"
       puts "Error: #{error}"
       puts "Rate: #{(success + error).to_f/30}"
-      puts "Online: #{online.count}"
+      puts "Online: #{online}"
       EM.stop
     end
   end
